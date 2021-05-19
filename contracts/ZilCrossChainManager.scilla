@@ -227,8 +227,8 @@ end
 (* @param initiator: The original caller who called the proxy. *)
 transition ClaimAdmin(initiator: ByStr20)
   IsProxy;
-  staging_admin <- stagingcontractadmin;
-  match staging_admin with
+  ostaging_admin <- stagingcontractadmin;
+  match ostaging_admin with
   | Some admin =>
     is_valid = builtin eq initiator admin;
     match is_valid with
@@ -368,7 +368,6 @@ transition CrossChain(toChainId: Uint64, toContract: ByStr, method: ByStr, txDat
   rawParam = append_TxParam empty_bystr txp;
   rawParamHash = builtin keccak256hash rawParam;
   updateZilTxHash txHashIndex rawParamHash;
-  (* todo: original caller *)
   e = { _eventname : "CrossChainEvent";
        sender : _origin;
        txId : paramTxHash;

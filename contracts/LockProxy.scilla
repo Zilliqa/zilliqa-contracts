@@ -22,6 +22,7 @@ type Error =
   | IllegalAmount
   | EmptyFromProxy
   | FromProxyNotExist
+  | DeserializeArgsFailed
 
 let make_error =
   fun (result: Error) =>
@@ -40,6 +41,7 @@ let make_error =
       | IllegalAmount => Int32 -11
       | EmptyFromProxy => Int32 -12
       | FromProxyNotExist => Int32 -13
+      | DeserializeArgsFailed => Int32 -14
       end
     in
     { _exception: "Error"; code: result_code }
@@ -50,13 +52,19 @@ let one_msg =
     let e = Nil {Message} in
       Cons {Message} m e
 
+let uint128_zero = Uint128 0
+let uint32_zero = Uint32 0
+(* Means transfer native zil if toAssetHash is zero_address *)
+let zero_address = 0x0000000000000000000000000000000000000000
+let zero_bystr = let a = 0x in builtin to_bystr a
+(* The constant unlock is used by lock transition, it represents the transition/function name on target chain *)
+let unlock = let a = 0x756e6c6f636b in builtin to_bystr a
+
 let serialize_tx_args =
   fun (args: TxArgs) =>
     match args with
     | TxArgs toAssetHash toAddress amount =>
-      let empty_str_0x = 0x in
-      let empty_str = builtin to_bystr empty_str_0x in
-      let to_asset_hash_str = append_varbytes empty_str toAssetHash in
+      let to_asset_hash_str = append_varbytes zero_bystr toAssetHash in
       let to_address = append_varbytes to_asset_hash_str toAddress in
       let amount = append_uint256_le to_address amount in
         amount
@@ -83,14 +91,6 @@ let deserialize_tx_args =
         | None => None { TxArgs }
         end
 
-let uint128_zero = Uint128 0
-let uint32_zero = Uint32 0
-let zero_address = 0x0000000000000000000000000000000000000000
-let zero_bystr = let a = 0x in builtin to_bystr a
-(* it is unlock *)
-let unlock = let a = 0x756e6c6f636b in builtin to_bystr a
-let uint128_max = Uint256 340282366920938463463374607431768211455
-
 (***************************************************)
 (*             The contract definition             *)
 (***************************************************)
@@ -100,6 +100,7 @@ contract LockProxy(
   init_manager: ByStr20
 )
 
+field stagingadmin: Option ByStr20 = None {ByStr20}
 field contractadmin: ByStr20  = init_admin
 field asset_map: Map ByStr20 (Map Uint64 ByStr) = Emp ByStr20 (Map Uint64 ByStr)
 (* The LockProxy in other blockchains *)
@@ -146,7 +147,7 @@ procedure ValidateAmount(amount: Uint128)
   end
 end
 
-procedure validateFromProxy(fromContractAddr: ByStr)
+procedure IsNonEmptyProxy(fromContractAddr: ByStr)
   is_equal = builtin eq zero_bystr fromContractAddr;
   match is_equal with
   | True =>
@@ -169,7 +170,7 @@ end
 procedure ValidateFromProxy(fromContractAddr: ByStr, fromChainId: Uint64)
   e = { _eventname: "ValidateFromProxy"; fromContractAddr: fromContractAddr; fromChainId: fromChainId };
   event e;
-  validateFromProxy fromContractAddr;
+  IsNonEmptyProxy fromContractAddr;
   targetAddr_o <- proxy_hash_map[fromChainId];
   match targetAddr_o with
   | Some targetAddr =>
@@ -177,12 +178,12 @@ procedure ValidateFromProxy(fromContractAddr: ByStr, fromChainId: Uint64)
     match is_equal with
     | True =>
     | False =>
-      e = IllegalFromProxy;
-      ThrowError e
+      illegalFromErr = IllegalFromProxy;
+      ThrowError illegalFromErr
     end
   | None =>
-    e = FromProxyNotExist;
-    ThrowError e
+    notExistErr = FromProxyNotExist;
+    ThrowError notExistErr
   end
 end
 
@@ -212,32 +213,24 @@ end
 
 (* transfer asset from LockProxy contract to address *)
 procedure TransferFromContract(toAssetHash: ByStr20, address: ByStr20, amount: Uint256)
-  (* convert Uint256 amount to Uint128 amount, so it cannot be greater than uint128_max *)
-  is_greater =  uint256_gt amount uint128_max;
-  match is_greater with
-  | True =>
+  uint128_amount_o = builtin to_uint128 amount;
+  match uint128_amount_o with
+  | Some uint128_amount =>
+    (* if toAssetHash is zero address, then transfer native zil, otherwise, transfer zrc2 *)
+    is_native_transfer = builtin eq toAssetHash zero_address;
+    match is_native_transfer with
+    | True =>
+      transferNativeZILFromContract address uint128_amount;
+      e = { _eventname: "TransferFromContract"; toAssetHash: toAssetHash; address: address; amount: amount };
+      event e
+    | False =>
+      transferZRC2FromContract toAssetHash address uint128_amount;
+      e = { _eventname: "TransferFromContract"; toAssetHash: toAssetHash; address: address; amount: amount };
+      event e
+    end
+  | None =>
     e = IllegalAmount;
     ThrowError e
-  | False =>
-    uint128_amount_o = builtin to_uint128 amount;
-    match uint128_amount_o with
-    | Some uint128_amount =>
-      (* if toAssetHash is zero address, then transfer native zil, otherwise, transfer zrc2 *)
-      is_native_transfer = builtin eq toAssetHash zero_address;
-      match is_native_transfer with
-      | True =>
-        transferNativeZILFromContract address uint128_amount;
-        e = { _eventname: "TransferFromContract"; toAssetHash: toAssetHash; address: address; amount: amount };
-        event e
-      | False =>
-        transferZRC2FromContract toAssetHash address uint128_amount;
-        e = { _eventname: "TransferFromContract"; toAssetHash: toAssetHash; address: address; amount: amount };
-        event e
-      end
-    | None =>
-      e = IllegalAmount;
-      ThrowError e
-    end
   end
 end
 
@@ -274,6 +267,43 @@ procedure CrossChain(toChainId: Uint64, toContract: ByStr, method: ByStr, txData
   send msgs
 end
 
+
+transition ChangeAdmin(newAdmin: ByStr20)
+    currentAdmin <- contractadmin;
+    isAdmin = builtin eq currentAdmin _sender;
+    match isAdmin with
+    | True =>
+      new_staging_admin = Some {ByStr20} newAdmin;
+      stagingadmin := new_staging_admin;
+      e = {_eventname: "ChangeAdmin"; oldAdmin: currentAdmin; newAdmin: newAdmin};
+      event e
+    | False =>
+      e = {_eventname: "ChangeAdmin FailedNotAdmin"; newAdmin: newAdmin};
+      event e
+    end
+end
+
+transition ClaimAdmin()
+    staging_admin_o <- stagingadmin;
+    match staging_admin_o with
+    | Some staging_admin =>
+      is_stagingadmin = builtin eq staging_admin _sender;
+      match is_stagingadmin with
+      | True =>
+        contractadmin := _sender;
+        tmp_staging_admin = None {ByStr20};
+        stagingadmin := tmp_staging_admin;
+        e = {_eventname: "ClaimAdmin"; newAdmin: _sender};
+        event e
+      | False =>
+        e = {_eventname: "ClaimAdmin FailedNotStagingadmin"; newAdmin: _sender};
+        event e
+      end
+    | None =>
+      e = {_eventname: "ClaimAdmin FailedNoStagingadmin"};
+      event e
+    end
+end
 
 (* This function is meant to be invoked by the user *)
 (* a certin amount teokens will be locked in the proxy contract the invoker/msg.sender immediately.*)
@@ -327,7 +357,7 @@ transition unlock(args: ByStr, fromContractAddr: ByStr, fromChainId: Uint64)
   tx_args_o = deserialize_tx_args args uint32_zero;
   match tx_args_o with
   | Some (TxArgs toAssetHash toAddressHash amount) =>
-    (* ValidateToAssetHash toAssetHash; *)
+    ValidateToAssetHash toAssetHash;
     toAssetAddress_o = builtin to_bystr20 toAssetHash;
     toAddress_o = builtin to_bystr20 toAddressHash;
     match toAssetAddress_o with
@@ -346,7 +376,9 @@ transition unlock(args: ByStr, fromContractAddr: ByStr, fromChainId: Uint64)
       ThrowError e
     end
    
-  | None =>
+  | None => 
+    e = DeserializeArgsFailed;
+    ThrowError e
   end
 end
 

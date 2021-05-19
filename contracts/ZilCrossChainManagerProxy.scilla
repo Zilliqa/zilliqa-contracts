@@ -116,6 +116,8 @@ end
 (*             Cross chain transition              *)
 (***************************************************)
 
+
+(* Invoked by poly-cli *)
 transition InitGenesisBlock(rawHeader: ByStr, pubkeys: List Pubkey)
   current_impl <- crosschain_manager;
   msg = {_tag: "InitGenesisBlock"; _recipient: current_impl; _amount: zero; rawHeader: rawHeader; pubkeys: pubkeys};
@@ -123,6 +125,7 @@ transition InitGenesisBlock(rawHeader: ByStr, pubkeys: List Pubkey)
   send msgs
 end
 
+(* Invoked zilliqa relayer *)
 transition ChangeBookKeeper(rawHeader: ByStr, pubkeys: List Pubkey, sigList: List Signature)
   current_impl <- crosschain_manager;
   msg = {_tag: "ChangeBookKeeper"; _recipient: current_impl; _amount: zero; rawHeader: rawHeader; pubkeys: pubkeys; sigList: sigList};
@@ -130,6 +133,7 @@ transition ChangeBookKeeper(rawHeader: ByStr, pubkeys: List Pubkey, sigList: Lis
   send msgs
 end
 
+(* Invoked by smart contracts on Zilliqa blockchain *)
 transition CrossChain(toChainId: Uint64, toContract: ByStr, method: ByStr, txData: ByStr)
   current_impl <- crosschain_manager;
   msg = {_tag: "CrossChain"; _recipient: current_impl; _amount: zero; toChainId: toChainId; toContract: toContract; method: method; txData: txData; originContractAddr: _sender};
@@ -137,6 +141,7 @@ transition CrossChain(toChainId: Uint64, toContract: ByStr, method: ByStr, txDat
   send msgs
 end
 
+(* Invoked zilliqa relayer *)
 transition VerifyHeaderAndExecuteTx(proof: Proof, rawHeader: ByStr, headerProof: Proof, curRawHeader: ByStr, headerSig: List Signature)
   current_impl <- crosschain_manager;
   msg = {_tag: "VerifyHeaderAndExecuteTx"; _recipient: current_impl; _amount: zero; proof: proof; rawHeader: rawHeader; headerProof: headerProof; curRawHeader: curRawHeader; headerSig: headerSig};
